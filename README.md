@@ -1,24 +1,19 @@
 -- PunchServer (Script inside ServerScriptService)
--- This handles destruction, wreck points, and size scaling
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local PunchHit = ReplicatedStorage:WaitForChild("PunchHit")
 
--- How many wreck points each destroyed part gives
 local POINTS_PER_PART = 10
+local SIZE_PER_MILESTONE = 0.05
+local MILESTONE_EVERY = 50
+local RESPAWN_TIME = 120 -- seconds before part comes back
 
--- How much size increases per point milestone
-local SIZE_PER_MILESTONE = 0.05 -- added to scale each milestone
-local MILESTONE_EVERY = 50       -- every 50 points, you grow
-
--- Store each player's points
 local playerPoints = {}
 
 Players.PlayerAdded:Connect(function(player)
 	playerPoints[player.UserId] = 0
 
-	-- Create a leaderstat so points show on the leaderboard
 	local leaderstats = Instance.new("Folder")
 	leaderstats.Name = "leaderstats"
 	leaderstats.Parent = player
@@ -36,10 +31,7 @@ end)
 local function growPlayer(player)
 	local character = player.Character
 	if not character then return end
-	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
-	if not humanoidRootPart then return end
 
-	-- Scale every body part up slightly
 	for _, part in pairs(character:GetDescendants()) do
 		if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
 			part.Size = part.Size + Vector3.new(SIZE_PER_MILESTONE, SIZE_PER_MILESTONE, SIZE_PER_MILESTONE)
@@ -47,32 +39,73 @@ local function growPlayer(player)
 	end
 end
 
+local function destroyWithPhysics(part, puncher)
+	-- Save original state and clone the part for respawning later
+	local originalParent = part.Parent
+	local originalAnchored = part.Anchored
+
+	local clone = part:Clone()
+	clone.Anchored = true
+	clone.Transparency = 1
+	clone.CanCollide = false
+	clone.Parent = originalParent
+
+	-- Unanchor and launch the part
+	part.Anchored = false
+
+	-- Direction away from the player who punched
+	local direction = Vector3.new(0, 1, 0)
+	local character = puncher.Character
+	if character and character:FindFirstChild("HumanoidRootPart") then
+		local punchDir = (part.Position - character.HumanoidRootPart.Position).Unit
+		direction = punchDir + Vector3.new(0, 0.4, 0) -- slight upward angle
+	end
+
+	-- Apply launch velocity and random spin
+	part.AssemblyLinearVelocity = direction * 60
+	part.AssemblyAngularVelocity = Vector3.new(
+		math.random(-8, 8),
+		math.random(-8, 8),
+		math.random(-8, 8)
+	)
+
+	-- Remove the flying part after a few seconds so it doesn't clutter the map
+	task.delay(5, function()
+		if part and part.Parent then
+			part:Destroy()
+		end
+	end)
+
+	-- Respawn the original part after RESPAWN_TIME seconds
+	task.delay(RESPAWN_TIME, function()
+		if clone and clone.Parent then
+			clone.Transparency = 0
+			clone.CanCollide = true
+			clone.Anchored = originalAnchored
+		end
+	end)
+end
+
 PunchHit.OnServerEvent:Connect(function(player, targetPart)
-	-- Safety checks
 	if not targetPart then return end
 	if not targetPart:IsA("BasePart") then return end
-
-	-- Check the part is tagged as destructible
-	-- In Studio, add a BoolValue named "Destructible" inside any part you want breakable
 	if not targetPart:FindFirstChild("Destructible") then return end
 
-	-- Check punch range (prevent exploiting from far away)
 	local character = player.Character
 	if not character then return end
 	local rootPart = character:FindFirstChild("HumanoidRootPart")
 	if not rootPart then return end
 
 	local distance = (rootPart.Position - targetPart.Position).Magnitude
-	if distance > 15 then return end -- must be within 15 studs
+	if distance > 15 then return end
 
-	-- Destroy the part
-	targetPart:Destroy()
+	-- Physics destruction instead of instant delete
+	destroyWithPhysics(targetPart, player)
 
-	-- Add points
+	-- Points
 	local userId = player.UserId
 	playerPoints[userId] = (playerPoints[userId] or 0) + POINTS_PER_PART
 
-	-- Update leaderboard
 	local leaderstats = player:FindFirstChild("leaderstats")
 	if leaderstats then
 		local wrecks = leaderstats:FindFirstChild("Wreck Points")
@@ -81,7 +114,6 @@ PunchHit.OnServerEvent:Connect(function(player, targetPart)
 		end
 	end
 
-	-- Check if player hit a growth milestone
 	if playerPoints[userId] % MILESTONE_EVERY == 0 then
 		growPlayer(player)
 	end
